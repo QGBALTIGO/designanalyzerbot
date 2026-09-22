@@ -329,10 +329,32 @@ async def plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _upsert(update, storage)
     used = storage.usage_this_month(user.telegram_user_id)
     limit = settings.plan_limit(user.plan)
+    extras = {
+        "free": (
+            "🔍 Análise básica\n"
+            "📄 Clone simples de página e assets não inclusos"
+        ),
+        "pro": (
+            "✅ Análise completa\n"
+            "🧬 Clone e extração de assets\n"
+            f"🕷 Clone multipágina: até <b>{settings.clone_pages('pro')}</b> páginas\n"
+            "🧪 Auditoria SEO/Performance/WCAG/Segurança\n"
+            "📄 HTML único · 🖼 Galeria · 🧠 Tecnologias\n"
+            "🔄 Histórico e comparação de versões"
+        ),
+        "agency": (
+            "✅ Tudo do Pro\n"
+            f"🕷 Clone multipágina: até <b>{settings.clone_pages('agency')}</b> páginas\n"
+            "🧱 Export HTML/CSS + React/Vite + Next.js + Tailwind\n"
+            "✨ Modernizar e Inspire-se\n"
+            "🏢 Ferramentas para fluxo de agência"
+        ),
+    }.get(user.plan, "")
     await update.effective_message.reply_text(
         f"📊 <b>Seu plano: {PLAN_LABEL.get(user.plan, user.plan)}</b>\n\n"
         f"Análises neste mês: <b>{used}/{limit}</b>\n"
-        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>",
+        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>\n\n"
+        f"{extras}",
         parse_mode=ParseMode.HTML,
     )
 
