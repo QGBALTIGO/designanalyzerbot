@@ -17,6 +17,7 @@ from .analyzer import AnalysisArtifacts, DesignAnalyzer
 from .config import Settings
 from .manager import AnalysisManager
 from .progress_ui import render_capture_progress, render_capture_queued, render_progress, render_queued
+from .premium_bot import install_premium, premium_command_specs
 from .security import UnsafeUrl, validate_public_url
 from .storage import Job, QuotaExceeded, Storage
 from .webclone import WebsiteCapture
@@ -37,6 +38,7 @@ def menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔍 Analisar site", callback_data="analyze")],
         [InlineKeyboardButton("🧬 Clonar página", callback_data="clone"), InlineKeyboardButton("📦 Extrair assets", callback_data="assets")],
+        [InlineKeyboardButton("💎 Ferramentas Premium", callback_data="premium")],
         [InlineKeyboardButton("📊 Meu plano", callback_data="plan"), InlineKeyboardButton("📋 Histórico", callback_data="history")],
         [InlineKeyboardButton("❓ Ajuda", callback_data="help")],
     ])
@@ -90,6 +92,10 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    premium_handler = context.application.bot_data.get("premium_text_handler")
+    if context.user_data.get("awaiting_premium") and premium_handler:
+        if await premium_handler(update, context):
+            return
     text = (update.effective_message.text or "").strip()
     capture_mode = context.user_data.pop("awaiting_capture", None)
     if capture_mode in {"clone", "assets"}:
@@ -405,6 +411,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/analisar site.com</code> — nova análise\n"
         "<code>/clonar site.com</code> — clone offline seguro\n"
         "<code>/assets site.com</code> — extrair imagens, fontes, ícones e CSS\n"
+        "<code>/premium</code> — ferramentas profissionais\n"
+        "<code>/auditar site.com</code> — auditoria completa\n"
+        "<code>/clonarsite site.com</code> — clone multipágina\n"
+        "<code>/reconstruir site.com</code> — HTML/React/Next/Tailwind\n"
         "<code>/status</code> — status e progresso da última análise\n"
         "<code>/historico</code> — análises recentes\n"
         "<code>/plano</code> — uso mensal\n"
@@ -436,8 +446,12 @@ async def admin_setplan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    action = query.data or ""
+    if action == "premium" or action.startswith("premium:"):
+        premium_handler = context.application.bot_data.get("premium_callback_handler")
+        if premium_handler and await premium_handler(update, context):
+            return
     await query.answer()
-    action = query.data
     if action == "analyze":
         context.user_data["awaiting_url"] = True
         await query.message.reply_text("🌐 Envie o link do site que deseja analisar.")
@@ -583,10 +597,11 @@ def create_application(settings: Settings) -> Application:
         capture=capture,
         capture_semaphore=asyncio.Semaphore(settings.max_concurrent_captures),
     )
+    install_premium(application, settings, storage)
 
     async def post_init(app: Application) -> None:
         await manager.start()
-        await app.bot.set_my_commands([
+        commands = [
             ("start", "Abrir o Design Analyzer"),
             ("analisar", "Analisar um site"),
             ("clonar", "Clonar uma página offline"),
@@ -596,7 +611,9 @@ def create_application(settings: Settings) -> Application:
             ("plano", "Meu plano e uso"),
             ("ajuda", "Como usar"),
             ("id", "Meu ID"),
-        ])
+        ]
+        commands[4:4] = premium_command_specs()
+        await app.bot.set_my_commands(commands)
 
     async def post_shutdown(app: Application) -> None:
         await manager.stop()
