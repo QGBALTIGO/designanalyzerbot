@@ -12,6 +12,11 @@ def main() -> None:
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # Evita que bibliotecas HTTP registrem URLs da Bot API, que contêm o token.
+    for noisy_logger in ("httpx", "httpcore", "telegram.request"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
     app = create_application(settings)
     app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=False)
 
