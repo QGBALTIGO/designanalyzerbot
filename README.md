@@ -161,6 +161,8 @@ Os valores são defaults e podem ser alterados por variáveis de ambiente.
 
 ### Custos em créditos
 
+- extração de assets simples (`/assets`): 1;
+- clone simples (`/clonar`): 2;
 - tecnologias: 1;
 - HTML único: 2;
 - galeria: 2;
@@ -183,6 +185,7 @@ A entrada de URLs é tratada como não confiável.
 - DNS é resolvido e IPv4/IPv6 privados, loopback, link-local, multicast, reservados e não especificados são rejeitados;
 - redirects de downloads são validados salto a salto;
 - subrequisições do Chromium também passam por bloqueio de rede privada;
+- o Chromium usado pelo Lighthouse é roteado por um proxy local que valida e fixa cada destino a IPs públicos antes da conexão;
 - service workers são bloqueados nos fluxos de captura;
 - concorrência e timeouts configuráveis;
 - previews muito altos são reduzidos antes do envio ao Telegram;
