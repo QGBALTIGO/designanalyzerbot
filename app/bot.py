@@ -280,7 +280,11 @@ async def _start_capture(
                         "Os arquivos continuam salvos no servidor para diagnóstico."
                     ),
                 )
+            if credit_operation_id is not None:
+                pstore.finish_operation(credit_operation_id, True)
         except asyncio.TimeoutError:
+            if credit_operation_id is not None:
+                pstore.finish_operation(credit_operation_id, False)
             await context.bot.edit_message_text(
                 chat_id=message.chat_id,
                 message_id=message.message_id,
@@ -288,6 +292,11 @@ async def _start_capture(
                 parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
+            if credit_operation_id is not None:
+                try:
+                    pstore.finish_operation(credit_operation_id, False)
+                except Exception:
+                    logger.exception("failed to refund capture credits for %s", capture_id)
             logger.exception("capture %s failed", capture_id)
             await context.bot.edit_message_text(
                 chat_id=message.chat_id,
