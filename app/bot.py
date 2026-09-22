@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
+import time
 from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -49,7 +50,7 @@ def _upsert(update: Update, storage: Storage):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _, storage, manager = _services(context)
+    _, storage, _ = _services(context)
     _upsert(update, storage)
     text = (
         "🎨 <b>Design Analyzer</b>\n\n"
@@ -145,7 +146,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _, storage, _ = _services(context)
+    _, storage, manager = _services(context)
     user = _upsert(update, storage)
     jobs = storage.recent_jobs(user.telegram_user_id, 1)
     if not jobs:
@@ -257,26 +258,100 @@ def create_application(settings: Settings) -> Application:
     analyzer = DesignAnalyzer(settings)
 
     application = Application.builder().token(settings.bot_token).build()
+    last_progress_edit: dict[int, float] = {}
+
+    async def progress_notify(job: Job, progress) -> None:
+        if not job.progress_message_id:
+            return
+        now = time.monotonic()
+        previous = last_progress_edit.get(job.id, 0.0)
+        important = progress.percent in {1, 3, 8, 12, 91, 95, 98, 100}
+        if not important and now - previous < 7:
+            return
+        try:
+            await application.bot.edit_message_text(
+                chat_id=job.chat_id,
+                message_id=job.progress_message_id,
+                text=render_progress(job, progress),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            last_progress_edit[job.id] = now
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.warning("could not edit progress for job %s: %s", job.id, exc)
+        except TelegramError as exc:
+            logger.warning("could not publish progress for job %s: %s", job.id, exc)
 
     async def notify(job: Job, artifacts: AnalysisArtifacts | None, error: str | None) -> None:
+        last_progress_edit.pop(job.id, None)
         if error:
-            await application.bot.send_message(
-                chat_id=job.chat_id,
-                text=f"❌ <b>Análise #{job.id} não foi concluída</b>\n\nO processamento falhou. Você pode tentar novamente; falhas não consomem sua cota mensal.",
-                parse_mode=ParseMode.HTML,
+            text = (
+                f"❌ <b>Análise #{job.id} não foi concluída</b>\n\n"
+                f"🌐 {html.escape(job.url)}\n\n"
+                "O processamento falhou. Você pode tentar novamente; falhas não consomem sua cota mensal."
             )
+            if job.progress_message_id:
+                try:
+                    await application.bot.edit_message_text(
+                        chat_id=job.chat_id,
+                        message_id=job.progress_message_id,
+                        text=text,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                    return
+                except TelegramError:
+                    pass
+            await application.bot.send_message(chat_id=job.chat_id, text=text, parse_mode=ParseMode.HTML)
             return
+
         assert artifacts is not None
-        await application.bot.send_message(chat_id=job.chat_id, text=artifacts.summary)
+        final_text = (
+            f"✅ <b>Análise #{job.id} concluída — 100%</b>\n\n"
+            "<code>██████████</code> <b>100%</b>\n\n"
+            f"{html.escape(artifacts.summary)}\n\n"
+            "📦 Preparando os arquivos para envio…"
+        )
+        if job.progress_message_id:
+            try:
+                await application.bot.edit_message_text(
+                    chat_id=job.chat_id,
+                    message_id=job.progress_message_id,
+                    text=final_text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except TelegramError:
+                await application.bot.send_message(chat_id=job.chat_id, text=final_text, parse_mode=ParseMode.HTML)
+        else:
+            await application.bot.send_message(chat_id=job.chat_id, text=final_text, parse_mode=ParseMode.HTML)
+
         max_bytes = settings.max_result_mb * 1024 * 1024
         if artifacts.pdf and artifacts.pdf.exists() and artifacts.pdf.stat().st_size <= max_bytes:
             with artifacts.pdf.open("rb") as fp:
-                await application.bot.send_document(chat_id=job.chat_id, document=fp, filename=f"design-system-{job.id}.pdf", caption="📄 Relatório visual completo")
+                await application.bot.send_document(
+                    chat_id=job.chat_id,
+                    document=fp,
+                    filename=f"design-system-{job.id}.pdf",
+                    caption="📄 Relatório visual completo",
+                )
         if artifacts.bundle and artifacts.bundle.exists():
             with artifacts.bundle.open("rb") as fp:
-                await application.bot.send_document(chat_id=job.chat_id, document=fp, filename=f"design-analysis-{job.id}.zip", caption="📦 Tokens, CSS, Tailwind, componentes e arquivos técnicos")
+                await application.bot.send_document(
+                    chat_id=job.chat_id,
+                    document=fp,
+                    filename=f"design-analysis-{job.id}.zip",
+                    caption="📦 Tokens, CSS, Tailwind, componentes e arquivos técnicos",
+                )
 
-    manager = AnalysisManager(storage, analyzer, settings.max_concurrent_analyses, notify)
+    manager = AnalysisManager(
+        storage,
+        analyzer,
+        settings.max_concurrent_analyses,
+        notify,
+        progress_notify,
+    )
     application.bot_data.update(settings=settings, storage=storage, manager=manager)
 
     async def post_init(app: Application) -> None:
@@ -284,7 +359,7 @@ def create_application(settings: Settings) -> Application:
         await app.bot.set_my_commands([
             ("start", "Abrir o Design Analyzer"),
             ("analisar", "Analisar um site"),
-            ("status", "Status da análise"),
+            ("status", "Status e progresso"),
             ("historico", "Minhas análises"),
             ("plano", "Meu plano e uso"),
             ("ajuda", "Como usar"),
