@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import statistics
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +44,7 @@ class Job:
     finished_at: str | None
     output_dir: str | None
     error: str | None
+    progress_message_id: int | None
 
 
 class QuotaExceeded(RuntimeError):
@@ -99,12 +101,16 @@ class Storage:
                     started_at TEXT,
                     finished_at TEXT,
                     output_dir TEXT,
-                    error TEXT
+                    error TEXT,
+                    progress_message_id INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(telegram_user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "progress_message_id" not in columns:
+                conn.execute("ALTER TABLE jobs ADD COLUMN progress_message_id INTEGER")
 
     def upsert_user(self, telegram_user_id: int, username: str | None, first_name: str | None) -> User:
         now = utcnow()
@@ -184,6 +190,46 @@ class Storage:
         if row is None:
             raise KeyError(job_id)
         return Job(**dict(row))
+
+    def set_progress_message(self, job_id: int, message_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET progress_message_id=? WHERE id=?",
+                (message_id, job_id),
+            )
+
+    def estimate_duration_seconds(self, plan: str, pages: int) -> int:
+        """Estimate runtime from recent successful jobs, with a conservative cold-start fallback."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT pages, started_at, finished_at
+                   FROM jobs
+                   WHERE plan=? AND status='completed'
+                     AND started_at IS NOT NULL AND finished_at IS NOT NULL
+                   ORDER BY id DESC LIMIT 20""",
+                (plan,),
+            ).fetchall()
+
+        per_page: list[float] = []
+        for row in rows:
+            try:
+                started = datetime.fromisoformat(row["started_at"])
+                finished = datetime.fromisoformat(row["finished_at"])
+                seconds = (finished - started).total_seconds()
+                page_count = max(1, int(row["pages"]) + 1)
+                if 3 <= seconds <= 3600:
+                    per_page.append(seconds / page_count)
+            except (TypeError, ValueError):
+                continue
+
+        target_pages = max(1, pages + 1)
+        if len(per_page) >= 2:
+            estimate = statistics.median(per_page) * target_pages
+            return max(30, min(1800, int(estimate)))
+
+        seconds_per_page = {"free": 12, "pro": 15, "agency": 15}.get(plan, 15)
+        base = 35 if plan == "free" else 50
+        return max(45, min(1800, base + target_pages * seconds_per_page))
 
     def mark_running(self, job_id: int) -> None:
         with self._conn() as conn:
