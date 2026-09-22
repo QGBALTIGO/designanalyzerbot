@@ -424,14 +424,16 @@ async def _run_lighthouse(
         "--output=json",
         f"--output-path={output_path}",
         "--preset=desktop",
-        f"--chrome-path={chrome_path}",
         "--chrome-flags=--headless --no-sandbox --disable-dev-shm-usage",
     ]
     try:
+        env = os.environ.copy()
+        env["CHROME_PATH"] = chrome_path
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except FileNotFoundError:
