@@ -15,7 +15,7 @@ from app.premium_audit import (
     _seo_report,
 )
 from app.premium_bot import _allowed
-from app.premium_storage import PremiumStorage
+from app.premium_storage import PremiumQuotaExceeded, PremiumStorage
 from app.rebuild_common import (
     content_brief,
     deterministic_redesign,
@@ -220,3 +220,16 @@ def test_plan_gates():
     assert not _allowed("pro", "rebuild", 1, settings)
     assert _allowed("agency", "rebuild", 1, settings)
     assert _allowed("free", "rebuild", 99, settings)
+
+
+def test_premium_credits_refund_failed_operations(tmp_path: Path):
+    store = PremiumStorage(tmp_path / "credits.sqlite3")
+    op = store.begin_operation(1, "audit", 4, 5)
+    assert store.premium_credits_used(1) == 4
+    with __import__("pytest").raises(PremiumQuotaExceeded):
+        store.begin_operation(1, "tech", 2, 5)
+    store.finish_operation(op, False)
+    assert store.premium_credits_used(1) == 0
+    op2 = store.begin_operation(1, "tech", 2, 5)
+    store.finish_operation(op2, True)
+    assert store.premium_credits_used(1) == 2
