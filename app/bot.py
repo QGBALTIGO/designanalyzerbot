@@ -5,7 +5,9 @@ import html
 import logging
 import time
 import uuid
+from pathlib import Path
 
+from PIL import Image
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
@@ -43,6 +45,22 @@ def menu() -> InlineKeyboardMarkup:
 def _services(context: ContextTypes.DEFAULT_TYPE):
     app = context.application
     return app.bot_data["settings"], app.bot_data["storage"], app.bot_data["manager"]
+
+
+def _make_telegram_preview(source: Path) -> Path:
+    """Create a Telegram-safe preview from a potentially very tall full-page screenshot."""
+    target = source.with_name(f"{source.stem}-telegram.jpg")
+    with Image.open(source) as image:
+        image = image.convert("RGB")
+        if image.width > 1280:
+            ratio = 1280 / image.width
+            image = image.resize((1280, max(1, int(image.height * ratio))))
+        if image.height > 1800:
+            image = image.crop((0, 0, image.width, 1800))
+        if image.width < 10 or image.height < 10:
+            raise ValueError("preview dimensions are too small")
+        image.save(target, "JPEG", quality=86, optimize=True)
+    return target
 
 
 def _upsert(update: Update, storage: Storage):
@@ -182,33 +200,60 @@ async def _start_capture(
             )
 
             if mode == "clone" and artifacts.clone_screenshot and artifacts.clone_screenshot.exists():
-                with artifacts.clone_screenshot.open("rb") as fp:
-                    await context.bot.send_photo(
-                        chat_id=message.chat_id,
-                        photo=fp,
-                        caption="🖼 Prévia do clone offline",
-                    )
+                preview_path = None
+                try:
+                    preview_path = _make_telegram_preview(artifacts.clone_screenshot)
+                    with preview_path.open("rb") as fp:
+                        await context.bot.send_photo(
+                            chat_id=message.chat_id,
+                            photo=fp,
+                            caption="🖼 Prévia do clone offline",
+                        )
+                except TelegramError as exc:
+                    logger.warning("photo preview rejected for capture %s: %s", capture_id, exc)
+                    try:
+                        with artifacts.clone_screenshot.open("rb") as fp:
+                            await context.bot.send_document(
+                                chat_id=message.chat_id,
+                                document=fp,
+                                filename="clone-preview-full.png",
+                                caption="🖼 Prévia completa do clone (enviada como arquivo)",
+                            )
+                    except TelegramError as fallback_exc:
+                        logger.warning("document preview also failed for capture %s: %s", capture_id, fallback_exc)
+                except Exception as exc:
+                    logger.warning("could not prepare preview for capture %s: %s", capture_id, exc)
 
-            if artifacts.bundle and artifacts.bundle.exists():
-                with artifacts.bundle.open("rb") as fp:
-                    await context.bot.send_document(
-                        chat_id=message.chat_id,
-                        document=fp,
-                        filename=artifacts.bundle.name,
-                        caption=(
-                            "🧬 HTML + CSS + imagens + fontes + manifest + screenshots"
-                            if mode == "clone"
-                            else "📦 Imagens + fontes + ícones + CSS + manifest"
-                        ),
-                    )
-            else:
-                with artifacts.manifest.open("rb") as fp:
-                    await context.bot.send_document(
-                        chat_id=message.chat_id,
-                        document=fp,
-                        filename="manifest.json",
-                        caption="⚠️ O ZIP excedeu o limite de envio; segue o manifest da captura.",
-                    )
+            try:
+                if artifacts.bundle and artifacts.bundle.exists():
+                    with artifacts.bundle.open("rb") as fp:
+                        await context.bot.send_document(
+                            chat_id=message.chat_id,
+                            document=fp,
+                            filename=artifacts.bundle.name,
+                            caption=(
+                                "🧬 HTML + CSS + imagens + fontes + manifest + screenshots"
+                                if mode == "clone"
+                                else "📦 Imagens + fontes + ícones + CSS + manifest"
+                            ),
+                        )
+                else:
+                    with artifacts.manifest.open("rb") as fp:
+                        await context.bot.send_document(
+                            chat_id=message.chat_id,
+                            document=fp,
+                            filename="manifest.json",
+                            caption="⚠️ O ZIP excedeu o limite de envio; segue o manifest da captura.",
+                        )
+            except TelegramError as exc:
+                logger.exception("could not deliver capture bundle %s", capture_id)
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=(
+                        "⚠️ A captura foi concluída, mas o Telegram recusou o arquivo final. "
+                        "Os arquivos continuam salvos no servidor para diagnóstico."
+                    ),
+                )
         except asyncio.TimeoutError:
             await context.bot.edit_message_text(
                 chat_id=message.chat_id,
