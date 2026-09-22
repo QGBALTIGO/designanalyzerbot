@@ -246,7 +246,26 @@ class WebsiteCapture:
             context = await browser.new_context(
                 viewport={"width": 1440, "height": 1000},
                 java_script_enabled=True,
+                service_workers="block",
             )
+
+            async def guard_route(route) -> None:
+                request_url = route.request.url
+                scheme = urlsplit(request_url).scheme.lower()
+                if scheme in {"data", "blob", "about"}:
+                    await route.continue_()
+                    return
+                if scheme not in _SAFE_SCHEMES:
+                    await route.abort()
+                    return
+                try:
+                    await validate_public_url(request_url)
+                except Exception:
+                    await route.abort()
+                    return
+                await route.continue_()
+
+            await context.route("**/*", guard_route)
             page = await context.new_page()
 
             await self._emit(
@@ -347,6 +366,11 @@ class WebsiteCapture:
                 if asset_url in seen:
                     continue
                 seen.add(asset_url)
+
+                parsed_asset = urlsplit(asset_url)
+                ext_hint = Path(parsed_asset.path).suffix.lower()
+                if hint in {"script", "fetch", "xmlhttprequest", "beacon"} and ext_hint not in (_IMAGE_EXTS | _FONT_EXTS | _STYLE_EXTS):
+                    continue
 
                 try:
                     final_url, response = await _safe_get(client, asset_url)
