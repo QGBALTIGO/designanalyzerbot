@@ -358,7 +358,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         "❓ <b>Como usar</b>\n\n"
         "<code>/analisar site.com</code> — nova análise\n"
-        "<code>/status</code> — status e progresso da última\n"
+        "<code>/clonar site.com</code> — clone offline seguro\n"
+        "<code>/assets site.com</code> — extrair imagens, fontes, ícones e CSS\n"
+        "<code>/status</code> — status e progresso da última análise\n"
         "<code>/historico</code> — análises recentes\n"
         "<code>/plano</code> — uso mensal\n"
         "<code>/cancelar ID</code> — cancela uma análise ainda na fila\n"
@@ -394,6 +396,15 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "analyze":
         context.user_data["awaiting_url"] = True
         await query.message.reply_text("🌐 Envie o link do site que deseja analisar.")
+    elif action == "clone":
+        context.user_data["awaiting_capture"] = "clone"
+        await query.message.reply_text(
+            "🧬 Envie a URL da página pública que deseja salvar offline.\n\n"
+            "O clone preserva o visual e os assets, mas desativa scripts, formulários, login e checkout."
+        )
+    elif action == "assets":
+        context.user_data["awaiting_capture"] = "assets"
+        await query.message.reply_text("📦 Envie a URL para extrair imagens, fontes, ícones e CSS.")
     elif action == "plan":
         await plan(update, context)
     elif action == "history":
@@ -411,6 +422,7 @@ def create_application(settings: Settings) -> Application:
         raise RuntimeError("BOT_TOKEN não configurado. Adicione apenas quando for ligar o bot real.")
     storage = Storage(settings.database_path)
     analyzer = DesignAnalyzer(settings)
+    capture = WebsiteCapture(settings)
 
     application = Application.builder().token(settings.bot_token).build()
     last_progress_edit: dict[int, float] = {}
@@ -519,13 +531,21 @@ def create_application(settings: Settings) -> Application:
         notify,
         progress_notify,
     )
-    application.bot_data.update(settings=settings, storage=storage, manager=manager)
+    application.bot_data.update(
+        settings=settings,
+        storage=storage,
+        manager=manager,
+        capture=capture,
+        capture_semaphore=asyncio.Semaphore(settings.max_concurrent_captures),
+    )
 
     async def post_init(app: Application) -> None:
         await manager.start()
         await app.bot.set_my_commands([
             ("start", "Abrir o Design Analyzer"),
             ("analisar", "Analisar um site"),
+            ("clonar", "Clonar uma página offline"),
+            ("assets", "Extrair imagens, fontes e CSS"),
             ("status", "Status e progresso"),
             ("historico", "Minhas análises"),
             ("plano", "Meu plano e uso"),
@@ -540,6 +560,8 @@ def create_application(settings: Settings) -> Application:
     application.post_shutdown = post_shutdown
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analisar", analyze_command))
+    application.add_handler(CommandHandler("clonar", clone_command))
+    application.add_handler(CommandHandler("assets", assets_command))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("historico", history))
     application.add_handler(CommandHandler("plano", plan))
