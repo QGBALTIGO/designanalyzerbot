@@ -21,6 +21,9 @@ def test_defaults(monkeypatch, tmp_path):
     assert settings.pro_clone_pages == 3
     assert settings.agency_clone_pages == 12
     assert settings.openai_model == "gpt-5.6-luna"
+    assert settings.pro_premium_credits == 50
+    assert settings.agency_premium_credits == 500
+    assert settings.premium_credit_limit("pro") == 50
     assert settings.ai_enabled is False
 
 
