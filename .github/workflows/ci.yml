@@ -37,3 +37,10 @@ jobs:
         env:
           CAPTURE_SMOKE_URL: https://baltigoflix.com.br/
         run: PYTHONPATH=. python scripts/capture_smoke.py
+
+      - name: Build premium production image
+        if: github.ref == 'refs/heads/premium-suite'
+        run: docker build -t design-analyzer-premium:test .
+      - name: Premium production smoke
+        if: github.ref == 'refs/heads/premium-suite'
+        run: docker run --rm design-analyzer-premium:test python scripts/premium_smoke.py
