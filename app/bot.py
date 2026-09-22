@@ -57,8 +57,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _upsert(update, storage)
     text = (
         "🎨 <b>Design Analyzer</b>\n\n"
-        "Envie um site e eu gero uma análise do design system: cores, tipografia, componentes, tokens, CSS, Tailwind e relatório.\n\n"
-        "Toque em <b>Analisar site</b> para começar."
+        "Analise design systems, extraia imagens/fontes e gere clones offline seguros de páginas públicas.\n\n"
+        "Escolha uma opção abaixo para começar."
     )
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=menu())
 
@@ -73,10 +73,162 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
+    capture_mode = context.user_data.pop("awaiting_capture", None)
+    if capture_mode in {"clone", "assets"}:
+        await _start_capture(update, context, text, capture_mode)
+        return
     if context.user_data.pop("awaiting_url", False) or "." in text:
         await _submit_url(update, context, text)
         return
-    await update.effective_message.reply_text("Use o botão abaixo para iniciar uma análise.", reply_markup=menu())
+    await update.effective_message.reply_text("Use uma das opções abaixo.", reply_markup=menu())
+
+
+async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await _start_capture(update, context, " ".join(context.args), "clone")
+        return
+    context.user_data["awaiting_capture"] = "clone"
+    await update.effective_message.reply_text(
+        "🧬 Envie a URL da página pública que deseja salvar offline.\n\n"
+        "O clone preserva o visual e os assets, mas desativa scripts, formulários, login e checkout."
+    )
+
+
+async def assets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await _start_capture(update, context, " ".join(context.args), "assets")
+        return
+    context.user_data["awaiting_capture"] = "assets"
+    await update.effective_message.reply_text(
+        "📦 Envie a URL do site para extrair imagens, fontes, ícones e folhas de estilo."
+    )
+
+
+async def _start_capture(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw_url: str,
+    mode: str,
+) -> None:
+    settings, storage, _ = _services(context)
+    user = _upsert(update, storage)
+
+    if user.plan == "free" and user.telegram_user_id not in settings.admin_ids:
+        await update.effective_message.reply_text(
+            "🔒 Clonagem e extração de assets estão disponíveis nos planos <b>Pro</b> e <b>Agency</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        normalized = (await validate_public_url(raw_url)).url
+    except UnsafeUrl as exc:
+        await update.effective_message.reply_text(f"⚠️ {html.escape(str(exc))}")
+        return
+
+    capture = context.application.bot_data["capture"]
+    semaphore = context.application.bot_data["capture_semaphore"]
+    capture_id = uuid.uuid4().hex[:10]
+    message = await update.effective_message.reply_text(
+        render_capture_queued(mode, normalized),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+    async def runner() -> None:
+        last_edit = 0.0
+
+        async def progress_cb(progress) -> None:
+            nonlocal last_edit
+            now = time.monotonic()
+            important = progress.percent in {3, 8, 12, 24, 34, 80, 87, 94, 100}
+            if not important and now - last_edit < 6:
+                return
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=message.chat_id,
+                    message_id=message.message_id,
+                    text=render_capture_progress(mode, normalized, progress),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                last_edit = now
+            except BadRequest as exc:
+                if "message is not modified" not in str(exc).lower():
+                    logger.warning("capture progress edit failed: %s", exc)
+            except TelegramError as exc:
+                logger.warning("capture progress publish failed: %s", exc)
+
+        try:
+            async with semaphore:
+                artifacts = await capture.capture(
+                    capture_id,
+                    normalized,
+                    mode,
+                    progress=progress_cb,
+                )
+
+            final_text = (
+                ("🧬 <b>Clone offline concluído</b>\n\n" if mode == "clone" else "📦 <b>Extração concluída</b>\n\n")
+                + f"<code>██████████</code> <b>100%</b>\n\n"
+                + html.escape(artifacts.summary)
+            )
+            await context.bot.edit_message_text(
+                chat_id=message.chat_id,
+                message_id=message.message_id,
+                text=final_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+
+            if mode == "clone" and artifacts.clone_screenshot and artifacts.clone_screenshot.exists():
+                with artifacts.clone_screenshot.open("rb") as fp:
+                    await context.bot.send_photo(
+                        chat_id=message.chat_id,
+                        photo=fp,
+                        caption="🖼 Prévia do clone offline",
+                    )
+
+            if artifacts.bundle and artifacts.bundle.exists():
+                with artifacts.bundle.open("rb") as fp:
+                    await context.bot.send_document(
+                        chat_id=message.chat_id,
+                        document=fp,
+                        filename=artifacts.bundle.name,
+                        caption=(
+                            "🧬 HTML + CSS + imagens + fontes + manifest + screenshots"
+                            if mode == "clone"
+                            else "📦 Imagens + fontes + ícones + CSS + manifest"
+                        ),
+                    )
+            else:
+                with artifacts.manifest.open("rb") as fp:
+                    await context.bot.send_document(
+                        chat_id=message.chat_id,
+                        document=fp,
+                        filename="manifest.json",
+                        caption="⚠️ O ZIP excedeu o limite de envio; segue o manifest da captura.",
+                    )
+        except asyncio.TimeoutError:
+            await context.bot.edit_message_text(
+                chat_id=message.chat_id,
+                message_id=message.message_id,
+                text="❌ <b>Captura interrompida</b>\n\nA página excedeu o tempo máximo de processamento.",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("capture %s failed", capture_id)
+            await context.bot.edit_message_text(
+                chat_id=message.chat_id,
+                message_id=message.message_id,
+                text=(
+                    "❌ <b>Não consegui concluir a captura.</b>\n\n"
+                    "O site pode bloquear automação, exigir autenticação ou carregar recursos incompatíveis."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+
+    context.application.create_task(runner(), name=f"capture-{mode}-{capture_id}")
 
 
 async def _submit_url(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_url: str) -> None:
