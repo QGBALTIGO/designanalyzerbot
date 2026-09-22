@@ -19,9 +19,10 @@ async def main() -> None:
         os.environ["CAPTURE_TIMEOUT_SECONDS"] = "120"
 
         settings = Settings.from_env()
+        target_url = os.getenv("CAPTURE_SMOKE_URL", "https://example.com/")
         result = await WebsiteCapture(settings).capture(
             "smoke",
-            "https://example.com/",
+            target_url,
             "clone",
         )
 
