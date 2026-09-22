@@ -3,3 +3,8 @@ git+https://github.com/berodcdev/designsys.git@e23e0abdd524144e599302863f5964399
 beautifulsoup4>=4.12,<5
 httpx>=0.27,<0.29
 Pillow>=10,<13
+axe-playwright-python==0.1.8
+warcio>=1.7,<2
+markdownify>=1.1,<2
+readability-lxml>=0.8,<1
+openai>=2,<3
