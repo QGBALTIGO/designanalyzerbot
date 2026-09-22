@@ -23,6 +23,6 @@ jobs:
       - name: Syntax check
         run: python -m compileall -q app main.py scripts tests
       - name: Unit tests
-        run: pytest -q
+        run: PYTHONPATH=. pytest -q
       - name: Offline smoke test
         run: PYTHONPATH=. python scripts/smoke.py
