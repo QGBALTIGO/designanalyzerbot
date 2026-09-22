@@ -26,6 +26,7 @@ from warcio.warcwriter import WARCWriter
 
 from .analyzer import ProgressUpdate
 from .config import Settings
+from .safe_proxy import SafeOutboundProxy
 from .security import validate_public_url
 from .tech_fingerprint import TechnologyDetector, TechnologyMatch
 
@@ -417,25 +418,32 @@ async def _run_lighthouse(
     *,
     timeout: int,
 ) -> dict:
-    args = [
-        binary,
-        url,
-        "--quiet",
-        "--output=json",
-        f"--output-path={output_path}",
-        "--preset=desktop",
-        "--chrome-flags=--headless --no-sandbox --disable-dev-shm-usage",
-    ]
     try:
-        env = os.environ.copy()
-        env["CHROME_PATH"] = chrome_path
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        async with SafeOutboundProxy() as proxy:
+            proxy_url = f"http://127.0.0.1:{proxy.port}"
+            chrome_flags = (
+                "--headless --no-sandbox --disable-dev-shm-usage "
+                f"--proxy-server={proxy_url} "
+                "--proxy-bypass-list=<-loopback>"
+            )
+            args = [
+                binary,
+                url,
+                "--quiet",
+                "--output=json",
+                f"--output-path={output_path}",
+                "--preset=desktop",
+                f"--chrome-flags={chrome_flags}",
+            ]
+            env = os.environ.copy()
+            env["CHROME_PATH"] = chrome_path
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except FileNotFoundError:
         return {"error": "Lighthouse não instalado"}
     except asyncio.TimeoutError:
