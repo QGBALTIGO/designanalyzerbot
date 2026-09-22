@@ -55,6 +55,8 @@ class Settings:
     agency_pages: int
     pro_clone_pages: int
     agency_clone_pages: int
+    pro_premium_credits: int
+    agency_premium_credits: int
     admin_ids: frozenset[int]
     analyzer_mock: bool
     openai_api_key: str | None
@@ -91,6 +93,8 @@ class Settings:
             agency_pages=_int("AGENCY_PAGES", 20, 1),
             pro_clone_pages=_int("PRO_CLONE_PAGES", 3, 1),
             agency_clone_pages=_int("AGENCY_CLONE_PAGES", 12, 1),
+            pro_premium_credits=_int("PRO_PREMIUM_CREDITS", 50, 1),
+            agency_premium_credits=_int("AGENCY_PREMIUM_CREDITS", 500, 1),
             admin_ids=_ids("ADMIN_IDS"),
             analyzer_mock=_bool("ANALYZER_MOCK", False),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
@@ -117,6 +121,13 @@ class Settings:
             "free": 0,
             "pro": self.pro_clone_pages,
             "agency": self.agency_clone_pages,
+        }.get(plan, 0)
+
+    def premium_credit_limit(self, plan: str) -> int:
+        return {
+            "free": 0,
+            "pro": self.pro_premium_credits,
+            "agency": self.agency_premium_credits,
         }.get(plan, 0)
 
     @property
