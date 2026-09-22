@@ -24,6 +24,7 @@ from app.rebuild_common import (
     jsx_from_html,
 )
 from app.site_clone import _make_single_file, _page_candidate, _sitemap_xml
+from app.safe_proxy import _split_host_port, _validation_url
 from app.tech_fingerprint import TechnologyDetector
 
 
@@ -233,3 +234,11 @@ def test_premium_credits_refund_failed_operations(tmp_path: Path):
     op2 = store.begin_operation(1, "tech", 2, 5)
     store.finish_operation(op2, True)
     assert store.premium_credits_used(1) == 2
+
+
+def test_safe_proxy_target_parsing():
+    assert _split_host_port("example.com:443", 443) == ("example.com", 443)
+    assert _split_host_port("example.com", 443) == ("example.com", 443)
+    assert _split_host_port("[2001:4860:4860::8888]:443", 443) == ("2001:4860:4860::8888", 443)
+    assert _validation_url("example.com", 443, True) == "https://example.com/"
+    assert _validation_url("2001:4860:4860::8888", 8443, True) == "https://[2001:4860:4860::8888]:8443/"
