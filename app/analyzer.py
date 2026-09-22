@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
+import time
 import zipfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
-from .security import UnsafeUrl, normalize_url, validate_public_url
+from .security import normalize_url, validate_public_url
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -19,6 +24,18 @@ class AnalysisArtifacts:
     pdf: Path | None
     bundle: Path | None
     summary: str
+
+
+@dataclass(frozen=True)
+class ProgressUpdate:
+    percent: int
+    stage: str
+    elapsed_seconds: int = 0
+    eta_seconds: int | None = None
+    detail: str | None = None
+
+
+ProgressCallback = Callable[[ProgressUpdate], Awaitable[None]]
 
 
 class AnalysisError(RuntimeError):
@@ -30,13 +47,33 @@ class DesignAnalyzer:
         self.settings = settings
         self.settings.work_dir.mkdir(parents=True, exist_ok=True)
 
-    async def analyze(self, job_id: int, raw_url: str, pages: int, plan: str) -> AnalysisArtifacts:
+    async def _emit(self, callback: ProgressCallback | None, update: ProgressUpdate) -> None:
+        if callback is None:
+            return
+        try:
+            await callback(update)
+        except Exception:
+            logger.exception("progress callback failed")
+
+    async def analyze(
+        self,
+        job_id: int,
+        raw_url: str,
+        pages: int,
+        plan: str,
+        *,
+        progress: ProgressCallback | None = None,
+        estimated_seconds: int | None = None,
+    ) -> AnalysisArtifacts:
+        started = time.monotonic()
+        estimate = max(30, estimated_seconds or 120)
+        await self._emit(progress, ProgressUpdate(3, "Validando endereço", 0, estimate))
+
         if self.settings.analyzer_mock:
             url = normalize_url(raw_url)
         else:
             validated = await validate_public_url(raw_url)
             url = validated.url
-            # Resolve uma segunda vez imediatamente antes de entregar o endereço ao Chromium.
             await validate_public_url(url)
 
         output_dir = self.settings.work_dir / f"job-{job_id}"
@@ -44,19 +81,50 @@ class DesignAnalyzer:
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        await self._emit(
+            progress,
+            ProgressUpdate(8, "Preparando navegador", int(time.monotonic() - started), estimate),
+        )
+
         if self.settings.analyzer_mock:
+            await self._emit(progress, ProgressUpdate(55, "Analisando páginas e componentes", 1, 1))
             self._create_mock_result(output_dir, url, pages, plan)
         else:
-            await self._run_designsys(output_dir, url, pages, plan)
+            await self._run_designsys(
+                output_dir,
+                url,
+                pages,
+                plan,
+                progress=progress,
+                estimated_seconds=estimate,
+                started=started,
+            )
+
+        elapsed = int(time.monotonic() - started)
+        await self._emit(progress, ProgressUpdate(91, "Processando resultados", elapsed, 20))
 
         pdf = output_dir / "design-system.pdf"
         if not pdf.exists():
             pdf = None
+
+        await self._emit(progress, ProgressUpdate(95, "Montando arquivos para entrega", elapsed, 10))
         bundle = self._create_bundle(output_dir)
+
+        await self._emit(progress, ProgressUpdate(98, "Gerando resumo final", int(time.monotonic() - started), 5))
         summary = self._build_summary(output_dir, url)
         return AnalysisArtifacts(output_dir, pdf, bundle, summary)
 
-    async def _run_designsys(self, output_dir: Path, url: str, pages: int, plan: str) -> None:
+    async def _run_designsys(
+        self,
+        output_dir: Path,
+        url: str,
+        pages: int,
+        plan: str,
+        *,
+        progress: ProgressCallback | None,
+        estimated_seconds: int,
+        started: float,
+    ) -> None:
         args = [
             self.settings.designsys_bin,
             "url",
@@ -81,11 +149,52 @@ class DesignAnalyzer:
         except FileNotFoundError as exc:
             raise AnalysisError("O executável 'designsys' não está instalado no servidor.") from exc
 
+        await self._emit(
+            progress,
+            ProgressUpdate(12, "Abrindo o site", int(time.monotonic() - started), estimated_seconds),
+        )
+
+        communicate_task = asyncio.create_task(proc.communicate())
+        stdout = b""
+        stderr = b""
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.settings.analysis_timeout_seconds
-            )
+            while True:
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        asyncio.shield(communicate_task),
+                        timeout=10,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    elapsed = max(1, int(time.monotonic() - started))
+                    ratio = min(1.0, elapsed / max(estimated_seconds, 1))
+                    percent = min(88, 15 + int(73 * ratio))
+                    eta = max(1, estimated_seconds - elapsed) if elapsed < estimated_seconds else None
+
+                    screenshots = output_dir / "screenshots"
+                    shot_count = 0
+                    if screenshots.exists():
+                        try:
+                            shot_count = sum(1 for p in screenshots.iterdir() if p.is_file())
+                        except OSError:
+                            shot_count = 0
+                    detail = f"{shot_count} captura(s) gerada(s)" if shot_count else None
+
+                    await self._emit(
+                        progress,
+                        ProgressUpdate(
+                            percent,
+                            "Analisando páginas e componentes",
+                            elapsed,
+                            eta,
+                            detail,
+                        ),
+                    )
+
+                    if elapsed >= self.settings.analysis_timeout_seconds:
+                        raise asyncio.TimeoutError
         except asyncio.TimeoutError as exc:
+            communicate_task.cancel()
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except ProcessLookupError:
