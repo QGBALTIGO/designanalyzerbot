@@ -25,6 +25,7 @@ from playwright.async_api import async_playwright
 from .analyzer import ProgressUpdate
 from .config import Settings
 from .security import UnsafeUrl, validate_public_url
+from .tech_fingerprint import TechnologyDetector
 
 
 ProgressCallback = Callable[[ProgressUpdate], Awaitable[None]]
@@ -72,6 +73,7 @@ class WebsiteCapture:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.settings.work_dir.mkdir(parents=True, exist_ok=True)
+        self.tech_detector = TechnologyDetector(settings.tech_fingerprints_path)
 
     async def _emit(self, callback: ProgressCallback | None, update: ProgressUpdate) -> None:
         if callback is not None:
@@ -111,7 +113,19 @@ class WebsiteCapture:
         resource_entries: list[dict[str, str]] = snapshot["resources"]
         original_screenshot = snapshot["screenshot"]
 
-        technologies = tuple(_detect_technologies(html_text, headers))
+        cookies = snapshot.get("cookies") or {}
+        try:
+            rich_matches = self.tech_detector.detect(
+                url=url,
+                html=html_text,
+                headers=headers,
+                cookies=cookies,
+            )
+            technologies = tuple(item.name for item in rich_matches)
+        except Exception:
+            technologies = ()
+        if not technologies:
+            technologies = tuple(_detect_technologies(html_text, headers))
         await self._emit(
             progress,
             ProgressUpdate(
@@ -319,6 +333,11 @@ class WebsiteCapture:
                     headers = await response.all_headers()
                 except Exception:
                     headers = {}
+            try:
+                cookie_items = await context.cookies()
+                cookies = {item.get("name", ""): item.get("value", "") for item in cookie_items}
+            except Exception:
+                cookies = {}
 
             screenshot: Path | None = None
             if mode == "clone":
@@ -333,6 +352,7 @@ class WebsiteCapture:
             "title": title,
             "headers": headers,
             "resources": resources,
+            "cookies": cookies,
             "screenshot": screenshot,
         }
 

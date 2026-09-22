@@ -17,6 +17,8 @@ from .analyzer import AnalysisArtifacts, DesignAnalyzer
 from .config import Settings
 from .manager import AnalysisManager
 from .progress_ui import render_capture_progress, render_capture_queued, render_progress, render_queued
+from .premium_bot import install_premium, premium_command_specs
+from .premium_storage import PremiumQuotaExceeded
 from .security import UnsafeUrl, validate_public_url
 from .storage import Job, QuotaExceeded, Storage
 from .webclone import WebsiteCapture
@@ -37,6 +39,7 @@ def menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔍 Analisar site", callback_data="analyze")],
         [InlineKeyboardButton("🧬 Clonar página", callback_data="clone"), InlineKeyboardButton("📦 Extrair assets", callback_data="assets")],
+        [InlineKeyboardButton("💎 Ferramentas Premium", callback_data="premium")],
         [InlineKeyboardButton("📊 Meu plano", callback_data="plan"), InlineKeyboardButton("📋 Histórico", callback_data="history")],
         [InlineKeyboardButton("❓ Ajuda", callback_data="help")],
     ])
@@ -90,6 +93,10 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    premium_handler = context.application.bot_data.get("premium_text_handler")
+    if context.user_data.get("awaiting_premium") and premium_handler:
+        if await premium_handler(update, context):
+            return
     text = (update.effective_message.text or "").strip()
     capture_mode = context.user_data.pop("awaiting_capture", None)
     if capture_mode in {"clone", "assets"}:
@@ -146,6 +153,25 @@ async def _start_capture(
 
     capture = context.application.bot_data["capture"]
     semaphore = context.application.bot_data["capture_semaphore"]
+    pstore = context.application.bot_data.get("premium_storage")
+    credit_operation_id = None
+    if user.telegram_user_id not in settings.admin_ids and pstore is not None:
+        cost = 2 if mode == "clone" else 1
+        try:
+            credit_operation_id = pstore.begin_operation(
+                user.telegram_user_id,
+                mode,
+                cost,
+                settings.premium_credit_limit(user.plan),
+            )
+        except PremiumQuotaExceeded as exc:
+            await update.effective_message.reply_text(
+                "💳 <b>Créditos premium esgotados</b>\n\n"
+                f"Usados: <b>{exc.used}/{exc.limit}</b> · custo deste recurso: <b>{exc.cost}</b>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
     capture_id = uuid.uuid4().hex[:10]
     message = await update.effective_message.reply_text(
         render_capture_queued(mode, normalized),
@@ -254,7 +280,11 @@ async def _start_capture(
                         "Os arquivos continuam salvos no servidor para diagnóstico."
                     ),
                 )
+            if credit_operation_id is not None:
+                pstore.finish_operation(credit_operation_id, True)
         except asyncio.TimeoutError:
+            if credit_operation_id is not None:
+                pstore.finish_operation(credit_operation_id, False)
             await context.bot.edit_message_text(
                 chat_id=message.chat_id,
                 message_id=message.message_id,
@@ -262,6 +292,11 @@ async def _start_capture(
                 parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
+            if credit_operation_id is not None:
+                try:
+                    pstore.finish_operation(credit_operation_id, False)
+                except Exception:
+                    logger.exception("failed to refund capture credits for %s", capture_id)
             logger.exception("capture %s failed", capture_id)
             await context.bot.edit_message_text(
                 chat_id=message.chat_id,
@@ -323,10 +358,43 @@ async def plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _upsert(update, storage)
     used = storage.usage_this_month(user.telegram_user_id)
     limit = settings.plan_limit(user.plan)
+    pstore = context.application.bot_data.get("premium_storage")
+    premium_limit = settings.premium_credit_limit(user.plan)
+    premium_used = pstore.premium_credits_used(user.telegram_user_id) if pstore else 0
+    if user.telegram_user_id in settings.admin_ids:
+        credits_line = "💳 Créditos premium: <b>ilimitados (admin)</b>\n"
+    elif premium_limit > 0:
+        credits_line = f"💳 Créditos premium: <b>{premium_used}/{premium_limit}</b>\n"
+    else:
+        credits_line = ""
+
+    extras = {
+        "free": (
+            "🔍 Análise básica\n"
+            "📄 Clone simples de página e assets não inclusos"
+        ),
+        "pro": (
+            "✅ Análise completa\n"
+            "🧬 Clone e extração de assets\n"
+            f"🕷 Clone multipágina: até <b>{settings.clone_pages('pro')}</b> páginas\n"
+            "🧪 Auditoria SEO/Performance/WCAG/Segurança\n"
+            "📄 HTML único · 🖼 Galeria · 🧠 Tecnologias\n"
+            "🔄 Histórico e comparação de versões"
+        ),
+        "agency": (
+            "✅ Tudo do Pro\n"
+            f"🕷 Clone multipágina: até <b>{settings.clone_pages('agency')}</b> páginas\n"
+            "🧱 Export HTML/CSS + React/Vite + Next.js + Tailwind\n"
+            "✨ Modernizar e Inspire-se\n"
+            "🏢 Ferramentas para fluxo de agência"
+        ),
+    }.get(user.plan, "")
     await update.effective_message.reply_text(
         f"📊 <b>Seu plano: {PLAN_LABEL.get(user.plan, user.plan)}</b>\n\n"
         f"Análises neste mês: <b>{used}/{limit}</b>\n"
-        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>",
+        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>\n"
+        f"{credits_line}\n"
+        f"{extras}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -405,6 +473,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/analisar site.com</code> — nova análise\n"
         "<code>/clonar site.com</code> — clone offline seguro\n"
         "<code>/assets site.com</code> — extrair imagens, fontes, ícones e CSS\n"
+        "<code>/premium</code> — ferramentas profissionais\n"
+        "<code>/auditar site.com</code> — auditoria completa\n"
+        "<code>/clonarsite site.com</code> — clone multipágina\n"
+        "<code>/reconstruir site.com</code> — HTML/React/Next/Tailwind\n"
         "<code>/status</code> — status e progresso da última análise\n"
         "<code>/historico</code> — análises recentes\n"
         "<code>/plano</code> — uso mensal\n"
@@ -436,8 +508,12 @@ async def admin_setplan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    action = query.data or ""
+    if action == "premium" or action.startswith("premium:"):
+        premium_handler = context.application.bot_data.get("premium_callback_handler")
+        if premium_handler and await premium_handler(update, context):
+            return
     await query.answer()
-    action = query.data
     if action == "analyze":
         context.user_data["awaiting_url"] = True
         await query.message.reply_text("🌐 Envie o link do site que deseja analisar.")
@@ -583,10 +659,11 @@ def create_application(settings: Settings) -> Application:
         capture=capture,
         capture_semaphore=asyncio.Semaphore(settings.max_concurrent_captures),
     )
+    install_premium(application, settings, storage)
 
     async def post_init(app: Application) -> None:
         await manager.start()
-        await app.bot.set_my_commands([
+        commands = [
             ("start", "Abrir o Design Analyzer"),
             ("analisar", "Analisar um site"),
             ("clonar", "Clonar uma página offline"),
@@ -596,7 +673,9 @@ def create_application(settings: Settings) -> Application:
             ("plano", "Meu plano e uso"),
             ("ajuda", "Como usar"),
             ("id", "Meu ID"),
-        ])
+        ]
+        commands[4:4] = premium_command_specs()
+        await app.bot.set_my_commands(commands)
 
     async def post_shutdown(app: Application) -> None:
         await manager.stop()
