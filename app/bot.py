@@ -329,6 +329,16 @@ async def plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _upsert(update, storage)
     used = storage.usage_this_month(user.telegram_user_id)
     limit = settings.plan_limit(user.plan)
+    pstore = context.application.bot_data.get("premium_storage")
+    premium_limit = settings.premium_credit_limit(user.plan)
+    premium_used = pstore.premium_credits_used(user.telegram_user_id) if pstore else 0
+    if user.telegram_user_id in settings.admin_ids:
+        credits_line = "💳 Créditos premium: <b>ilimitados (admin)</b>\n"
+    elif premium_limit > 0:
+        credits_line = f"💳 Créditos premium: <b>{premium_used}/{premium_limit}</b>\n"
+    else:
+        credits_line = ""
+
     extras = {
         "free": (
             "🔍 Análise básica\n"
@@ -353,7 +363,8 @@ async def plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         f"📊 <b>Seu plano: {PLAN_LABEL.get(user.plan, user.plan)}</b>\n\n"
         f"Análises neste mês: <b>{used}/{limit}</b>\n"
-        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>\n\n"
+        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>\n"
+        f"{credits_line}\n"
         f"{extras}",
         parse_mode=ParseMode.HTML,
     )
