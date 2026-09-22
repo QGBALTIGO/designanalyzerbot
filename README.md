@@ -1,83 +1,262 @@
 # Design Analyzer Bot 🎨
 
-Bot do Telegram que recebe uma URL pública e usa o [`designsys`](https://github.com/berodcdev/designsys) para extrair e entregar o design system do site: relatório PDF, tokens W3C, CSS variables, Tailwind, componentes e guia visual.
+DesignAnalyzerBot é um bot comercial para Telegram que transforma URLs públicas em análises de design, auditorias técnicas, clones offline, arquivos de preservação e projetos editáveis para desenvolvimento.
 
-## Estado atual
+O núcleo usa `designsys`, Playwright/Chromium, Lighthouse, axe-core, Wappalyzer-compatible fingerprints, WARC e ferramentas próprias de clonagem/reconstrução.
 
-MVP funcional sem token real no repositório. O token será adicionado apenas como variável de ambiente no deploy.
+## Recursos
 
-### Fluxo
+### 🔍 Analisar site
 
-1. usuário envia uma URL;
-2. o bot valida o domínio e bloqueia destinos locais/privados;
-3. registra a análise no SQLite e aplica a cota do plano;
-4. adiciona o trabalho numa fila com concorrência limitada;
-5. executa `designsys` em subprocesso com timeout;
-6. entrega PDF + ZIP técnico no Telegram.
+- design system completo via `designsys`;
+- PDF;
+- tokens W3C;
+- CSS variables;
+- Tailwind config;
+- componentes;
+- style guide;
+- fila, cota e progresso ao vivo.
+
+### 🧬 Clone seguro de página
+
+- DOM renderizado com Chromium;
+- lazy-loading;
+- imagens, fontes, ícones e CSS salvos localmente;
+- reescrita de URLs;
+- screenshot original e offline;
+- similaridade visual;
+- manifest JSON;
+- scripts, iframes, formulários, login e checkout desativados.
+
+### 🕷 Clone multipágina
+
+- descoberta de páginas internas do mesmo domínio;
+- Pro: até 3 páginas por padrão;
+- Agency: até 12 páginas por padrão;
+- links internos reescritos para navegação offline;
+- sitemap.xml;
+- Markdown por página;
+- site-map.json;
+- ZIP navegável.
+
+### 📄 HTML único
+
+Gera um único arquivo HTML com CSS, imagens e fontes locais incorporados como data URLs, sem depender da rede para abrir.
+
+### 🧪 Auditoria completa
+
+Entrega um pacote contendo:
+
+- Lighthouse;
+- Performance Web API;
+- SEO;
+- axe-core / acessibilidade;
+- headers de segurança;
+- links quebrados;
+- tecnologias;
+- screenshot;
+- PDF;
+- conteúdo legível em Markdown;
+- WARC;
+- relatório JSON;
+- relatório HTML navegável.
+
+### 🧠 Tecnologias
+
+Detecção baseada nos fingerprints do WebAnalyze/Wappalyzer, com DOM renderizado, headers, meta tags, cookies e scripts.
+
+### 🖼 Galeria de assets
+
+- imagens e ícones encontrados;
+- contact sheet;
+- gallery.html navegável;
+- arquivos originais;
+- ZIP completo.
+
+### 🔄 Histórico e comparação de versões
+
+Cada snapshot premium pode ser persistido no SQLite.
+
+A comparação mostra:
+
+- diferença visual;
+- imagem de diff;
+- assets adicionados/removidos;
+- tecnologias adicionadas/removidas;
+- hash do conteúdo;
+- comparison.json.
+
+### 🧱 Reconstrução editável
+
+`/reconstruir` gera em um único ZIP:
+
+- HTML/CSS offline;
+- React + Vite;
+- Next.js App Router;
+- scaffold Tailwind;
+- tokens de cores e fontes;
+- preview.
+
+### ✨ Modernizar / Inspire-se
+
+- usa conteúdo e sinais visuais da referência;
+- gera uma composição responsiva nova e editável;
+- funciona sem API externa através de fallback determinístico;
+- opcionalmente usa OpenAI quando `OPENAI_API_KEY` estiver configurada;
+- nunca preserva scripts, login ou checkout da referência.
 
 ## Comandos
 
-- `/start` — menu principal
-- `/analisar <url>` — nova análise
-- `/status [id]` — status
-- `/historico` — últimas análises
-- `/plano` — plano e uso mensal
-- `/cancelar <id>` — cancela se ainda estiver na fila
-- `/id` — mostra o Telegram ID
-- `/setplan USER_ID free|pro|agency` — somente administradores
+### Base
 
-## Planos preparados
+- `/start`
+- `/analisar <url>`
+- `/clonar <url>`
+- `/assets <url>`
+- `/status [id]`
+- `/historico`
+- `/plano`
+- `/cancelar <id>`
+- `/id`
 
-| Plano | Limite padrão | Páginas internas | Extração |
-|---|---:|---:|---|
-| Free | 1/mês | 2 | sem download de assets |
-| Pro | 10/mês | 8 | completa/exhaustiva |
-| Agency | 100/mês | 20 | completa/exhaustiva |
+### Premium
 
-Tudo é configurável por variáveis de ambiente; ainda não há cobrança integrada.
+- `/premium`
+- `/auditar <url>`
+- `/clonarsite <url>`
+- `/htmlunico <url>`
+- `/galeria <url>`
+- `/tecnologias <url>`
+- `/comparar <url>`
+- `/versoes [url]`
+- `/reconstruir <url>`
+- `/modernizar <url>`
+- `/inspirar <url>`
+
+### Admin
+
+- `/setplan USER_ID free|pro|agency`
+
+Administradores têm acesso funcional total para testes.
+
+## Planos
+
+| Recurso | Free | Pro | Agency |
+|---|---:|---:|---:|
+| Análises / mês | 1 | 10 | 100 |
+| Páginas internas no designsys | 2 | 8 | 20 |
+| Clone simples | — | ✅ | ✅ |
+| Extração de assets | — | ✅ | ✅ |
+| Auditoria completa | — | ✅ | ✅ |
+| HTML único | — | ✅ | ✅ |
+| Tecnologias profissionais | — | ✅ | ✅ |
+| Galeria de assets | — | ✅ | ✅ |
+| Histórico e comparação | — | ✅ | ✅ |
+| Clone multipágina | — | 3 páginas | 12 páginas |
+| React / Next / Tailwind | — | — | ✅ |
+| Modernizar / Inspire-se | — | — | ✅ |
+| Créditos premium / mês | 0 | 50 | 500 |
+
+Os valores são defaults e podem ser alterados por variáveis de ambiente.
+
+### Custos em créditos
+
+- tecnologias: 1;
+- HTML único: 2;
+- galeria: 2;
+- comparação: 2;
+- auditoria: 4;
+- clone multipágina: 1 crédito por página disponível no plano, com mínimo de 2;
+- reconstrução editável: 6;
+- modernizar: 8;
+- inspire-se: 8.
+
+Operações que falham tecnicamente são marcadas como falha e os créditos deixam de contar no consumo mensal.
 
 ## Segurança
 
-- aceita apenas HTTP/HTTPS;
-- rejeita credenciais embutidas na URL;
-- bloqueia `localhost`, `.local`, `.internal`, `.lan` e `.home`;
-- resolve DNS e rejeita IPv4/IPv6 privados, loopback, link-local, multicast, reservados e não especificados;
-- valida o destino novamente imediatamente antes de iniciar a análise;
-- timeout de processamento e encerramento do grupo de processos;
-- número de análises simultâneas limitado;
-- token e dados locais ignorados pelo Git.
+A entrada de URLs é tratada como não confiável.
 
-> Observação: para um SaaS público em escala, a execução do Chromium deve evoluir para isolamento em containers/sandbox por job e controle de egress de rede. A validação atual reduz fortemente SSRF, mas isolamento de rede é a camada definitiva contra DNS rebinding e comportamento malicioso de páginas.
+- somente HTTP/HTTPS;
+- URLs com credenciais são rejeitadas;
+- bloqueio de localhost e sufixos internos;
+- DNS é resolvido e IPv4/IPv6 privados, loopback, link-local, multicast, reservados e não especificados são rejeitados;
+- redirects de downloads são validados salto a salto;
+- subrequisições do Chromium também passam por bloqueio de rede privada;
+- service workers são bloqueados nos fluxos de captura;
+- concorrência e timeouts configuráveis;
+- previews muito altos são reduzidos antes do envio ao Telegram;
+- fallback para documento se o Telegram rejeitar uma imagem;
+- token e segredos somente por environment variables.
 
-## Desenvolvimento sem token
+Para escala pública elevada, a evolução recomendada continua sendo isolar cada job em container/sandbox com egress de rede controlado.
+
+## Persistência
+
+O Railway usa volume persistente em `/app/data`.
+
+Por padrão:
+
+- SQLite: `/app/data/designanalyzer.db`;
+- jobs: `/app/data/jobs`;
+- premium: `/app/data/premium`.
+
+Snapshots, comparações e consumo de créditos sobrevivem a redeploys.
+
+## IA opcional
+
+`/modernizar` e `/inspirar` não dependem de IA para funcionar.
+
+Quando configurado:
+
+```env
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-5.6-luna
+```
+
+o bot tenta uma reconstrução assistida pelo modelo e usa o gerador local como fallback em caso de erro.
+
+A chave nunca deve ser adicionada ao GitHub.
+
+## Desenvolvimento
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install python-telegram-bot==22.8 pytest pytest-asyncio
-pytest -q
+pip install -r requirements-dev.txt
+PYTHONPATH=. pytest -q
 ANALYZER_MOCK=1 PYTHONPATH=. python scripts/smoke.py
 ```
 
-O modo `ANALYZER_MOCK=1` existe apenas para testes e gera artefatos sintéticos sem abrir Chromium.
+## Testes de produção
 
-## Produção
+A CI executa:
 
-O Dockerfile instala o `designsys` a partir de um commit fixado e instala o Chromium do Playwright.
+1. compilação Python;
+2. testes unitários;
+3. smoke do analisador;
+4. opcionalmente clone real com Chromium na main;
+5. smoke específico do BaltigoFlix quando solicitado;
+6. build do Docker premium quando o commit da branch contém `[premium-smoke]`;
+7. dentro desse Docker: Lighthouse, auditoria real, HTML único, exports HTML/React/Next/Tailwind e Modernizar sem IA.
 
-Variáveis mínimas:
+## Deploy
 
-```env
-BOT_TOKEN=...
-ADMIN_IDS=123456789
-```
+`Dockerfile` e `railway.toml` estão prontos para Railway.
 
-As demais estão documentadas em `.env.example`.
+O Docker de produção inclui:
 
-### Railway
+- Python 3.12;
+- Playwright Chromium;
+- designsys;
+- Lighthouse 13.5;
+- Node 22;
+- fingerprints do WebAnalyze.
 
-O projeto já inclui `railway.toml` e `Dockerfile`. Para persistência real do SQLite no Railway, monte um volume e aponte `DATABASE_PATH`/`WORK_DIR` para ele. Em uma fase posterior, vale migrar para PostgreSQL e storage de objetos.
+Configuração completa em `.env.example`.
 
-## Testes
+## Licenças
 
-A CI verifica sintaxe, testes unitários e um fluxo smoke completo offline em cada push/PR. O token do Telegram não é necessário para a suíte.
+O código do projeto e os componentes de terceiros devem respeitar seus respectivos termos. Os avisos dos componentes incorporados estão em `THIRD_PARTY.md`.
+
+SingleFile e Browsertrix Crawler foram avaliados durante a pesquisa, mas não são incorporados ao runtime desta implementação.
