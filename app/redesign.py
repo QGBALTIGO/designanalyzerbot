@@ -17,6 +17,7 @@ from .config import Settings
 from .rebuild_common import (
     collect_css,
     content_brief,
+    copy_assets,
     deterministic_redesign,
     sanitize_generated_html,
 )
@@ -104,6 +105,7 @@ class InspiredRebuilder:
         if out.exists():
             shutil.rmtree(out)
         out.mkdir(parents=True)
+        copy_assets(capture.output_dir, out / "assets")
 
         html_path = out / "index.html"
         html_path.write_text(rebuilt_html, encoding="utf-8")
