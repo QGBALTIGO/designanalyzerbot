@@ -69,3 +69,27 @@ def render_queued(job: Job, position: int, estimate_seconds: int) -> str:
         f"⏳ Previsão inicial: <b>{eta_text(estimate_seconds, 0)}</b>\n\n"
         "Esta mensagem será atualizada automaticamente."
     )
+
+
+def render_capture_progress(mode: str, url: str, progress: ProgressUpdate) -> str:
+    label = "Clone offline" if mode == "clone" else "Extração de assets"
+    detail = f"\n📌 {html.escape(progress.detail)}" if progress.detail else ""
+    return (
+        f"🧬 <b>{label}</b>\n"
+        f"🌐 {html.escape(site_label(url))}\n\n"
+        f"<code>{bar(progress.percent)}</code> <b>{progress.percent}%</b>\n\n"
+        f"⚙️ <b>{html.escape(progress.stage)}</b>{detail}\n"
+        f"⏱ Decorrido: <b>{duration(progress.elapsed_seconds)}</b>\n\n"
+        "<i>Scripts e fluxos interativos não são preservados no clone offline.</i>"
+    )
+
+
+def render_capture_queued(mode: str, url: str) -> str:
+    label = "Clone offline" if mode == "clone" else "Extração de assets"
+    return (
+        f"🧬 <b>{label}</b>\n"
+        f"🌐 {html.escape(url)}\n\n"
+        "<code>░░░░░░░░░░</code> <b>0%</b>\n\n"
+        "🕓 <b>Preparando captura</b>\n"
+        "Esta mensagem será atualizada automaticamente."
+    )
