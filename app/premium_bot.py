@@ -21,7 +21,7 @@ from .asset_gallery import AssetGallery
 from .config import Settings
 from .history_compare import VersionComparator
 from .premium_audit import FullSiteAudit
-from .premium_storage import PremiumStorage
+from .premium_storage import PremiumQuotaExceeded, PremiumStorage
 from .rebuild_export import RebuildExporter
 from .redesign import InspiredRebuilder
 from .security import UnsafeUrl, validate_public_url
@@ -242,6 +242,28 @@ async def _start_premium(
         return
 
     operation_id = uuid.uuid4().hex[:10]
+    pstore: PremiumStorage = context.application.bot_data["premium_storage"]
+    credit_operation_id = None
+    if user.telegram_user_id not in settings.admin_ids:
+        cost = _premium_cost(mode, user.plan, settings)
+        limit = settings.premium_credit_limit(user.plan)
+        try:
+            credit_operation_id = pstore.begin_operation(
+                user.telegram_user_id,
+                mode,
+                cost,
+                limit,
+            )
+        except PremiumQuotaExceeded as exc:
+            await update.effective_message.reply_text(
+                "💳 <b>Créditos premium esgotados</b>\n\n"
+                f"Usados: <b>{exc.used}/{exc.limit}</b>\n"
+                f"Este recurso custa: <b>{exc.cost}</b> créditos.\n\n"
+                "Os créditos renovam no início de cada mês.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
     message = await update.effective_message.reply_text(
         _render_progress(mode, normalized, 0, "Preparando", 0, None),
         parse_mode=ParseMode.HTML,
@@ -257,6 +279,7 @@ async def _start_premium(
             normalized,
             message.chat_id,
             message.message_id,
+            credit_operation_id,
         ),
         name=f"premium-{mode}-{operation_id}",
     )
@@ -271,6 +294,7 @@ async def _run_premium(
     url: str,
     chat_id: int,
     message_id: int,
+    credit_operation_id: int | None,
 ) -> None:
     app = context.application
     settings: Settings = app.bot_data["settings"]
@@ -434,7 +458,15 @@ async def _run_premium(
             else:
                 raise RuntimeError(f"modo premium desconhecido: {mode}")
 
+        if credit_operation_id is not None:
+            pstore.finish_operation(credit_operation_id, True)
+
     except Exception as exc:
+        if credit_operation_id is not None:
+            try:
+                pstore.finish_operation(credit_operation_id, False)
+            except Exception:
+                logger.exception("failed to refund premium credits for operation %s", credit_operation_id)
         logger.exception("premium operation %s %s failed", mode, operation_id)
         detail = f"\n\n<code>{html.escape(str(exc)[:700])}</code>" if user_id in settings.admin_ids else ""
         try:
@@ -576,6 +608,22 @@ def _prompt(mode: str) -> str:
         "versions": "🕘 Envie uma URL para filtrar o histórico ou use /versoes sem argumentos.",
     }
     return prompts.get(mode, "🌐 Envie a URL.")
+
+
+def _premium_cost(mode: str, plan: str, settings: Settings) -> int:
+    fixed = {
+        "tech": 1,
+        "singlefile": 2,
+        "gallery": 2,
+        "compare": 2,
+        "audit": 4,
+        "rebuild": 6,
+        "modernize": 8,
+        "inspire": 8,
+    }
+    if mode == "multipage":
+        return max(2, settings.clone_pages(plan))
+    return fixed.get(mode, 1)
 
 
 def _label(mode: str) -> str:
