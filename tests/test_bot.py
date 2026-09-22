@@ -35,6 +35,8 @@ def make_settings(tmp_path: Path) -> Settings:
         agency_pages=20,
         pro_clone_pages=3,
         agency_clone_pages=12,
+        pro_premium_credits=50,
+        agency_premium_credits=500,
         admin_ids=frozenset({123}),
         analyzer_mock=True,
         openai_api_key=None,
