@@ -26,3 +26,9 @@ jobs:
         run: PYTHONPATH=. pytest -q
       - name: Offline smoke test
         run: PYTHONPATH=. python scripts/smoke.py
+      - name: Install Chromium for capture smoke
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python -m playwright install --with-deps chromium
+      - name: Real Chromium clone smoke
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: PYTHONPATH=. python scripts/capture_smoke.py
