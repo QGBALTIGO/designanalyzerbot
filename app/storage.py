@@ -35,7 +35,7 @@ class Job:
     telegram_user_id: int
     chat_id: int
     url: str
-    plan : str
+    plan: str
     status: str
     pages: int
     created_at: str
@@ -86,6 +86,20 @@ class Storage:
                     plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','pro','agency')),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_user_id INTEGER NOT NULL REFERENCES users(telegram_user_id),
+                    chat_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    plan TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')),
+                    pages INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    output_dir TEXT,
+                    error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(telegram_user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
