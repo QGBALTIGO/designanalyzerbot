@@ -18,6 +18,11 @@ def _host(url: str) -> str:
     return (urlsplit(url).hostname or url).lower()
 
 
+def _month_start() -> str:
+    now = datetime.now(timezone.utc)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
 @dataclass(frozen=True)
 class Snapshot:
     id: int
@@ -38,6 +43,14 @@ class Snapshot:
     technologies: tuple[str, ...]
     metadata: dict[str, Any]
     created_at: str
+
+
+class PremiumQuotaExceeded(RuntimeError):
+    def __init__(self, used: int, cost: int, limit: int) -> None:
+        super().__init__(f"premium quota exceeded: {used}+{cost}>{limit}")
+        self.used = used
+        self.cost = cost
+        self.limit = limit
 
 
 class PremiumStorage:
@@ -86,6 +99,18 @@ class PremiumStorage:
                     ON premium_snapshots(telegram_user_id, host, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_premium_snapshots_user_mode_created
                     ON premium_snapshots(telegram_user_id, mode, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS premium_operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_user_id INTEGER NOT NULL,
+                    mode TEXT NOT NULL,
+                    cost INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
+                    created_at TEXT NOT NULL,
+                    finished_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_premium_operations_user_created
+                    ON premium_operations(telegram_user_id, created_at DESC);
                 """
             )
 
@@ -200,6 +225,68 @@ class PremiumStorage:
                 params,
             ).fetchone()
         return self._row(row) if row is not None else None
+
+    def premium_credits_used(self, telegram_user_id: int) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(cost), 0) AS total
+                FROM premium_operations
+                WHERE telegram_user_id=? AND created_at>=?
+                  AND status IN ('running','completed')
+                """,
+                (telegram_user_id, _month_start()),
+            ).fetchone()
+        return int(row["total"] or 0)
+
+    def begin_operation(
+        self,
+        telegram_user_id: int,
+        mode: str,
+        cost: int,
+        limit: int,
+    ) -> int:
+        cost = max(0, int(cost))
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(cost), 0) AS total
+                    FROM premium_operations
+                    WHERE telegram_user_id=? AND created_at>=?
+                      AND status IN ('running','completed')
+                    """,
+                    (telegram_user_id, _month_start()),
+                ).fetchone()
+                used = int(row["total"] or 0)
+                if used + cost > limit:
+                    raise PremiumQuotaExceeded(used, cost, limit)
+                cur = conn.execute(
+                    """
+                    INSERT INTO premium_operations(
+                        telegram_user_id, mode, cost, status, created_at
+                    ) VALUES (?, ?, ?, 'running', ?)
+                    """,
+                    (telegram_user_id, mode, cost, _utcnow()),
+                )
+                op_id = int(cur.lastrowid)
+                conn.commit()
+                return op_id
+            except Exception:
+                conn.rollback()
+                raise
+
+    def finish_operation(self, operation_id: int, success: bool) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE premium_operations
+                SET status=?, finished_at=?
+                WHERE id=? AND status='running'
+                """,
+                ("completed" if success else "failed", _utcnow(), operation_id),
+            )
 
     def _row(self, row: sqlite3.Row) -> Snapshot:
         try:
