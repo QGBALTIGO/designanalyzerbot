@@ -18,6 +18,7 @@ from .config import Settings
 from .manager import AnalysisManager
 from .progress_ui import render_capture_progress, render_capture_queued, render_progress, render_queued
 from .premium_bot import install_premium, premium_command_specs
+from .premium_storage import PremiumQuotaExceeded
 from .security import UnsafeUrl, validate_public_url
 from .storage import Job, QuotaExceeded, Storage
 from .webclone import WebsiteCapture
@@ -152,6 +153,25 @@ async def _start_capture(
 
     capture = context.application.bot_data["capture"]
     semaphore = context.application.bot_data["capture_semaphore"]
+    pstore = context.application.bot_data.get("premium_storage")
+    credit_operation_id = None
+    if user.telegram_user_id not in settings.admin_ids and pstore is not None:
+        cost = 2 if mode == "clone" else 1
+        try:
+            credit_operation_id = pstore.begin_operation(
+                user.telegram_user_id,
+                mode,
+                cost,
+                settings.premium_credit_limit(user.plan),
+            )
+        except PremiumQuotaExceeded as exc:
+            await update.effective_message.reply_text(
+                "💳 <b>Créditos premium esgotados</b>\n\n"
+                f"Usados: <b>{exc.used}/{exc.limit}</b> · custo deste recurso: <b>{exc.cost}</b>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
     capture_id = uuid.uuid4().hex[:10]
     message = await update.effective_message.reply_text(
         render_capture_queued(mode, normalized),
