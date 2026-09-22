@@ -17,6 +17,11 @@ def test_defaults(monkeypatch, tmp_path):
     assert settings.pro_monthly_limit == 10
     assert settings.plan_pages("agency") == 20
     assert settings.max_concurrent_analyses == 1
+    assert settings.max_concurrent_premium == 1
+    assert settings.pro_clone_pages == 3
+    assert settings.agency_clone_pages == 12
+    assert settings.openai_model == "gpt-5.6-luna"
+    assert settings.ai_enabled is False
 
 
 def test_env_parsing(monkeypatch, tmp_path):
@@ -31,6 +36,8 @@ def test_env_parsing(monkeypatch, tmp_path):
     assert settings.admin_ids == frozenset({1, 2, 3})
     assert settings.analyzer_mock is True
     assert settings.free_monthly_limit == 4
+    assert settings.clone_pages("pro") == 3
+    assert settings.clone_pages("agency") == 12
 
 
 def test_bad_numeric_setting(monkeypatch):
