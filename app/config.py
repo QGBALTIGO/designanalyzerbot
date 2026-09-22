@@ -38,6 +38,10 @@ class Settings:
     analysis_timeout_seconds: int
     max_concurrent_analyses: int
     max_result_mb: int
+    capture_timeout_seconds: int
+    max_concurrent_captures: int
+    max_capture_assets: int
+    max_capture_mb: int
     free_monthly_limit: int
     pro_monthly_limit: int
     agency_monthly_limit: int
@@ -58,6 +62,10 @@ class Settings:
             analysis_timeout_seconds=_int("ANALYSIS_TIMEOUT_SECONDS", 900, 30),
             max_concurrent_analyses=_int("MAX_CONCURRENT_ANALYSES", 1, 1),
             max_result_mb=_int("MAX_RESULT_MB", 45, 1),
+            capture_timeout_seconds=_int("CAPTURE_TIMEOUT_SECONDS", 300, 30),
+            max_concurrent_captures=_int("MAX_CONCURRENT_CAPTURES", 1, 1),
+            max_capture_assets=_int("MAX_CAPTURE_ASSETS", 300, 10),
+            max_capture_mb=_int("MAX_CAPTURE_MB", 45, 5),
             free_monthly_limit=_int("FREE_MONTHLY_LIMIT", 1, 0),
             pro_monthly_limit=_int("PRO_MONTHLY_LIMIT", 10, 0),
             agency_monthly_limit=_int("AGENCY_MONTHLY_LIMIT", 100, 0),
