@@ -262,7 +262,19 @@ def create_application(settings: Settings) -> Application:
 
     async def progress_notify(job: Job, progress) -> None:
         if not job.progress_message_id:
-            return
+            try:
+                created = await application.bot.send_message(
+                    chat_id=job.chat_id,
+                    text=render_progress(job, progress),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                storage.set_progress_message(job.id, created.message_id)
+                last_progress_edit[job.id] = time.monotonic()
+                return
+            except TelegramError as exc:
+                logger.warning("could not create progress message for job %s: %s", job.id, exc)
+                return
         now = time.monotonic()
         previous = last_progress_edit.get(job.id, 0.0)
         important = progress.percent in {1, 3, 8, 12, 91, 95, 98, 100}
