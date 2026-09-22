@@ -14,9 +14,14 @@ def make_settings(tmp_path: Path) -> Settings:
         bot_token="123456:ABCDEF_fake_token_for_tests",
         database_path=tmp_path / "bot.db",
         work_dir=tmp_path / "jobs",
+        premium_dir=tmp_path / "premium",
         designsys_bin="designsys",
+        lighthouse_bin="lighthouse",
+        tech_fingerprints_path=tmp_path / "technologies.json",
         analysis_timeout_seconds=60,
+        audit_timeout_seconds=120,
         max_concurrent_analyses=1,
+        max_concurrent_premium=1,
         max_result_mb=45,
         capture_timeout_seconds=300,
         max_concurrent_captures=1,
@@ -28,8 +33,12 @@ def make_settings(tmp_path: Path) -> Settings:
         free_pages=2,
         pro_pages=8,
         agency_pages=20,
+        pro_clone_pages=3,
+        agency_clone_pages=12,
         admin_ids=frozenset({123}),
         analyzer_mock=True,
+        openai_api_key=None,
+        openai_model="gpt-5.6-luna",
         log_level="INFO",
     )
 
@@ -39,7 +48,9 @@ def test_create_application_registers_lifecycle_and_handlers(tmp_path: Path) -> 
     assert app.post_init is not None
     assert app.post_shutdown is not None
     assert app.bot_data["manager"].workers == 1
-    assert sum(len(group) for group in app.handlers.values()) >= 10
+    assert sum(len(group) for group in app.handlers.values()) >= 20
+    assert "premium_storage" in app.bot_data
+    assert "premium_audit" in app.bot_data
 
 
 def test_make_telegram_preview_limits_tall_screenshot(tmp_path: Path) -> None:
