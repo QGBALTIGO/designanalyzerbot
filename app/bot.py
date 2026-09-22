@@ -6,11 +6,13 @@ from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .analyzer import AnalysisArtifacts, DesignAnalyzer
 from .config import Settings
 from .manager import AnalysisManager
+from .progress_ui import render_progress, render_queued
 from .security import UnsafeUrl, validate_public_url
 from .storage import Job, QuotaExceeded, Storage
 
@@ -47,7 +49,7 @@ def _upsert(update: Update, storage: Storage):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _, storage, _ = _services(context)
+    _, storage, manager = _services(context)
     _upsert(update, storage)
     text = (
         "🎨 <b>Design Analyzer</b>\n\n"
@@ -104,16 +106,15 @@ async def _submit_url(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_ur
         )
         return
 
-    position = manager.enqueue(job.id)
-    await update.effective_message.reply_text(
-        f"✅ <b>Análise #{job.id} adicionada</b>\n\n"
-        f"🌐 {html.escape(job.url)}\n"
-        f"📄 Até {job.pages + 1} páginas\n"
-        f"🕓 Posição aproximada na fila: {position}\n\n"
-        "Eu envio o resultado aqui quando terminar.",
+    position = manager.approximate_position()
+    estimate = storage.estimate_duration_seconds(job.plan, job.pages)
+    message = await update.effective_message.reply_text(
+        render_queued(job, position, estimate),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+    storage.set_progress_message(job.id, message.message_id)
+    manager.enqueue(job.id)
 
 
 async def plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -161,9 +162,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.effective_message.reply_text("Análise não encontrada.")
             return
         job = candidate
-    msg = f"{STATUS_LABEL.get(job.status, job.status)} <b>Análise #{job.id}</b>\n🌐 {html.escape(job.url)}"
-    if job.error and job.status == "failed":
-        msg += "\n\nA análise falhou. Tente novamente ou use outro endereço."
+    progress = manager.get_progress(job.id)
+    if job.status == "running" and progress is not None:
+        msg = render_progress(job, progress)
+    elif job.status == "queued":
+        msg = render_queued(job, 1, storage.estimate_duration_seconds(job.plan, job.pages))
+    else:
+        msg = f"{STATUS_LABEL.get(job.status, job.status)} <b>Análise #{job.id}</b>\n🌐 {html.escape(job.url)}"
+        if job.error and job.status == "failed":
+            msg += "\n\nA análise falhou. Tente novamente ou use outro endereço."
     await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
@@ -173,7 +180,21 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args or not context.args[0].isdigit():
         await update.effective_message.reply_text("Use <code>/cancelar ID</code>. Ex.: <code>/cancelar 12</code>", parse_mode=ParseMode.HTML)
         return
-    ok = storage.cancel_queued(int(context.args[0]), user.telegram_user_id)
+    job_id = int(context.args[0])
+    ok = storage.cancel_queued(job_id, user.telegram_user_id)
+    if ok:
+        job = storage.get_job(job_id)
+        if job.progress_message_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=job.chat_id,
+                    message_id=job.progress_message_id,
+                    text=f"🚫 <b>Análise #{job.id} cancelada</b>\n\n🌐 {html.escape(job.url)}",
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except TelegramError:
+                pass
     await update.effective_message.reply_text("🚫 Análise cancelada." if ok else "Não encontrei uma análise sua que ainda esteja na fila.")
 
 
@@ -181,7 +202,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         "❓ <b>Como usar</b>\n\n"
         "<code>/analisar site.com</code> — nova análise\n"
-        "<code>/status</code> — status da última\n"
+        "<code>/status</code> — status e progresso da última\n"
         "<code>/historico</code> — análises recentes\n"
         "<code>/plano</code> — uso mensal\n"
         "<code>/cancelar ID</code> — cancela uma análise ainda na fila\n"
