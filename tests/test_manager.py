@@ -19,16 +19,24 @@ async def test_manager_processes_job_and_notifies(tmp_path, monkeypatch):
     job = store.create_job_with_quota(telegram_user_id=1, chat_id=99, url="https://example.com", pages=2, limit=5)
     events = []
 
+    progress_events = []
+
     async def notify(job, artifacts, error):
         events.append((job.status, bool(artifacts), error))
 
-    manager = AnalysisManager(store, DesignAnalyzer(settings), 1, notify)
+    async def progress_notify(job, progress):
+        progress_events.append((job.status, progress.percent, progress.stage))
+
+    manager = AnalysisManager(store, DesignAnalyzer(settings), 1, notify, progress_notify)
     await manager.start()
     manager.enqueue(job.id)
     await asyncio.wait_for(manager.queue.join(), timeout=2)
     await manager.stop()
     assert store.get_job(job.id).status == "completed"
     assert events == [("completed", True, None)]
+    assert progress_events[0][1] == 1
+    assert progress_events[-1][1] == 100
+    assert any(percent == 55 for _, percent, _ in progress_events)
 
 
 @pytest.mark.asyncio
@@ -46,7 +54,10 @@ async def test_manager_does_not_duplicate_recovered_job(tmp_path, monkeypatch):
         nonlocal calls
         calls += 1
 
-    manager = AnalysisManager(store, DesignAnalyzer(settings), 1, notify)
+    async def progress_notify(job, progress):
+        return None
+
+    manager = AnalysisManager(store, DesignAnalyzer(settings), 1, notify, progress_notify)
     await manager.start()  # recovered pending job gets queued here
     manager.enqueue(job.id)  # duplicate enqueue attempt must be ignored
     await asyncio.wait_for(manager.queue.join(), timeout=2)
