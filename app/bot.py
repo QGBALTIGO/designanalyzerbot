@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import time
-from pathlib import Path
+import uuid
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -13,9 +14,10 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from .analyzer import AnalysisArtifacts, DesignAnalyzer
 from .config import Settings
 from .manager import AnalysisManager
-from .progress_ui import render_progress, render_queued
+from .progress_ui import render_capture_progress, render_capture_queued, render_progress, render_queued
 from .security import UnsafeUrl, validate_public_url
 from .storage import Job, QuotaExceeded, Storage
+from .webclone import WebsiteCapture
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ PLAN_LABEL = {"free": "Free", "pro": "Pro", "agency": "Agency"}
 def menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔍 Analisar site", callback_data="analyze")],
+        [InlineKeyboardButton("🧬 Clonar página", callback_data="clone"), InlineKeyboardButton("📦 Extrair assets", callback_data="assets")],
         [InlineKeyboardButton("📊 Meu plano", callback_data="plan"), InlineKeyboardButton("📋 Histórico", callback_data="history")],
         [InlineKeyboardButton("❓ Ajuda", callback_data="help")],
     ])
