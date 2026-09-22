@@ -24,6 +24,7 @@ RUN ln -s /opt/lighthouse/cli/index.js /usr/local/bin/lighthouse
 
 RUN mkdir -p /opt/webanalyze
 COPY --from=techdb /src/technologies.json /opt/webanalyze/technologies.json
+COPY --from=techdb /src/LICENSE /opt/webanalyze/LICENSE
 
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
