@@ -1,2 +1,5 @@
 python-telegram-bot==22.8
 git+https://github.com/berodcdev/designsys.git@e23e0abdd524144e599302863f5964399d542785
+beautifulsoup4>=4.12,<5
+httpx>=0.27,<0.29
+Pillow>=10,<13
