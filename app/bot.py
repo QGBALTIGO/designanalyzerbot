@@ -1,0 +1,290 @@
+from __future__ import annotations
+
+import html
+import logging
+from pathlib import Path
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+
+from .analyzer import AnalysisArtifacts, DesignAnalyzer
+from .config import Settings
+from .manager import AnalysisManager
+from .security import UnsafeUrl, validate_public_url
+from .storage import Job, QuotaExceeded, Storage
+
+logger = logging.getLogger(__name__)
+
+STATUS_LABEL = {
+    "queued": "🕓 Na fila",
+    "running": "🔎 Analisando",
+    "completed": "✅ Concluída",
+    "failed": "❌ Falhou",
+    "cancelled": "🚫 Cancelada",
+}
+PLAN_LABEL = {"free": "Free", "pro": "Pro", "agency": "Agency"}
+
+
+def menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Analisar site", callback_data="analyze")],
+        [InlineKeyboardButton("📊 Meu plano", callback_data="plan"), InlineKeyboardButton("📋 Histórico", callback_data="history")],
+        [InlineKeyboardButton("❓ Ajuda", callback_data="help")],
+    ])
+
+
+def _services(context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    return app.bot_data["settings"], app.bot_data["storage"], app.bot_data["manager"]
+
+
+def _upsert(update: Update, storage: Storage):
+    user = update.effective_user
+    if user is None:
+        raise RuntimeError("missing Telegram user")
+    return storage.upsert_user(user.id, user.username, user.first_name)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _, storage, _ = _services(context)
+    _upsert(update, storage)
+    text = (
+        "🎨 <b>Design Analyzer</b>\n\n"
+        "Envie um site e eu gero uma análise do design system: cores, tipografia, componentes, tokens, CSS, Tailwind e relatório.\n\n"
+        "Toque em <b>Analisar site</b> para começar."
+    )
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=menu())
+
+
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        await _submit_url(update, context, " ".join(context.args))
+        return
+    context.user_data["awaiting_url"] = True
+    await update.effective_message.reply_text("🌐 Envie o link do site que deseja analisar.\n\nExemplo: <code>https://www.aniquim.com.br</code>", parse_mode=ParseMode.HTML)
+
+
+async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (update.effective_message.text or "").strip()
+    if context.user_data.pop("awaiting_url", False) or "." in text:
+        await _submit_url(update, context, text)
+        return
+    await update.effective_message.reply_text("Use o botão abaixo para iniciar uma análise.", reply_markup=menu())
+
+
+async def _submit_url(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_url: str) -> None:
+    settings, storage, manager = _services(context)
+    user = _upsert(update, storage)
+    try:
+        if settings.analyzer_mock:
+            from .security import normalize_url
+            normalized = normalize_url(raw_url)
+        else:
+            normalized = (await validate_public_url(raw_url)).url
+    except UnsafeUrl as exc:
+        await update.effective_message.reply_text(f"⚠️ {html.escape(str(exc))}")
+        return
+
+    plan = user.plan
+    pages = settings.plan_pages(plan)
+    limit = settings.plan_limit(plan)
+    try:
+        job = storage.create_job_with_quota(
+            telegram_user_id=user.telegram_user_id,
+            chat_id=update.effective_chat.id,
+            url=normalized,
+            pages=pages,
+            limit=limit,
+        )
+    except QuotaExceeded as exc:
+        await update.effective_message.reply_text(
+            f"📊 Você já usou <b>{exc.used}/{exc.limit}</b> análises do plano <b>{PLAN_LABEL.get(exc.plan, exc.plan)}</b> neste mês.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    position = manager.enqueue(job.id)
+    await update.effective_message.reply_text(
+        f"✅ <b>Análise #{job.id} adicionada</b>\n\n"
+        f"🌐 {html.escape(job.url)}\n"
+        f"📄 Até {job.pages + 1} páginas\n"
+        f"🕓 Posição aproximada na fila: {position}\n\n"
+        "Eu envio o resultado aqui quando terminar.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+async def plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    settings, storage, _ = _services(context)
+    user = _upsert(update, storage)
+    used = storage.usage_this_month(user.telegram_user_id)
+    limit = settings.plan_limit(user.plan)
+    await update.effective_message.reply_text(
+        f"📊 <b>Seu plano: {PLAN_LABEL.get(user.plan, user.plan)}</b>\n\n"
+        f"Análises neste mês: <b>{used}/{limit}</b>\n"
+        f"Páginas internas por análise: <b>{settings.plan_pages(user.plan)}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _, storage, _ = _services(context)
+    user = _upsert(update, storage)
+    jobs = storage.recent_jobs(user.telegram_user_id, 8)
+    if not jobs:
+        await update.effective_message.reply_text("📋 Você ainda não fez nenhuma análise.")
+        return
+    lines = ["📋 <b>Suas análises</b>", ""]
+    for job in jobs:
+        lines.append(f"<b>#{job.id}</b> · {STATUS_LABEL.get(job.status, job.status)}")
+        lines.append(html.escape(job.url))
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _, storage, _ = _services(context)
+    user = _upsert(update, storage)
+    jobs = storage.recent_jobs(user.telegram_user_id, 1)
+    if not jobs:
+        await update.effective_message.reply_text("Nenhuma análise encontrada.")
+        return
+    job = jobs[0]
+    if context.args and context.args[0].isdigit():
+        try:
+            candidate = storage.get_job(int(context.args[0]))
+        except KeyError:
+            await update.effective_message.reply_text("Análise não encontrada.")
+            return
+        if candidate.telegram_user_id != user.telegram_user_id:
+            await update.effective_message.reply_text("Análise não encontrada.")
+            return
+        job = candidate
+    msg = f"{STATUS_LABEL.get(job.status, job.status)} <b>Análise #{job.id}</b>\n🌐 {html.escape(job.url)}"
+    if job.error and job.status == "failed":
+        msg += "\n\nA análise falhou. Tente novamente ou use outro endereço."
+    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _, storage, _ = _services(context)
+    user = _upsert(update, storage)
+    if not context.args or not context.args[0].isdigit():
+        await update.effective_message.reply_text("Use <code>/cancelar ID</code>. Ex.: <code>/cancelar 12</code>", parse_mode=ParseMode.HTML)
+        return
+    ok = storage.cancel_queued(int(context.args[0]), user.telegram_user_id)
+    await update.effective_message.reply_text("🚫 Análise cancelada." if ok else "Não encontrei uma análise sua que ainda esteja na fila.")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        "❓ <b>Como usar</b>\n\n"
+        "<code>/analisar site.com</code> — nova análise\n"
+        "<code>/status</code> — status da última\n"
+        "<code>/historico</code> — análises recentes\n"
+        "<code>/plano</code> — uso mensal\n"
+        "<code>/cancelar ID</code> — cancela uma análise ainda na fila\n"
+        "<code>/id</code> — mostra seu ID do Telegram",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(f"🆔 Seu ID: <code>{update.effective_user.id}</code>", parse_mode=ParseMode.HTML)
+
+
+async def admin_setplan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    settings, storage, _ = _services(context)
+    if update.effective_user.id not in settings.admin_ids:
+        return
+    if len(context.args) != 2 or not context.args[0].isdigit() or context.args[1] not in {"free", "pro", "agency"}:
+        await update.effective_message.reply_text("Uso: /setplan USER_ID free|pro|agency")
+        return
+    user_id = int(context.args[0])
+    try:
+        storage.set_plan(user_id, context.args[1])
+    except KeyError:
+        await update.effective_message.reply_text("Usuário ainda não iniciou o bot.")
+        return
+    await update.effective_message.reply_text(f"✅ Plano de {user_id} alterado para {context.args[1]}.")
+
+
+async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    action = query.data
+    if action == "analyze":
+        context.user_data["awaiting_url"] = True
+        await query.message.reply_text("🌐 Envie o link do site que deseja analisar.")
+    elif action == "plan":
+        await plan(update, context)
+    elif action == "history":
+        await history(update, context)
+    elif action == "help":
+        await help_command(update, context)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled Telegram update error", exc_info=context.error)
+
+
+def create_application(settings: Settings) -> Application:
+    if not settings.bot_token:
+        raise RuntimeError("BOT_TOKEN não configurado. Adicione apenas quando for ligar o bot real.")
+    storage = Storage(settings.database_path)
+    analyzer = DesignAnalyzer(settings)
+
+    application = Application.builder().token(settings.bot_token).build()
+
+    async def notify(job: Job, artifacts: AnalysisArtifacts | None, error: str | None) -> None:
+        if error:
+            await application.bot.send_message(
+                chat_id=job.chat_id,
+                text=f"❌ <b>Análise #{job.id} não foi concluída</b>\n\nO processamento falhou. Você pode tentar novamente; falhas não consomem sua cota mensal.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        assert artifacts is not None
+        await application.bot.send_message(chat_id=job.chat_id, text=artifacts.summary)
+        max_bytes = settings.max_result_mb * 1024 * 1024
+        if artifacts.pdf and artifacts.pdf.exists() and artifacts.pdf.stat().st_size <= max_bytes:
+            with artifacts.pdf.open("rb") as fp:
+                await application.bot.send_document(chat_id=job.chat_id, document=fp, filename=f"design-system-{job.id}.pdf", caption="📄 Relatório visual completo")
+        if artifacts.bundle and artifacts.bundle.exists():
+            with artifacts.bundle.open("rb") as fp:
+                await application.bot.send_document(chat_id=job.chat_id, document=fp, filename=f"design-analysis-{job.id}.zip", caption="📦 Tokens, CSS, Tailwind, componentes e arquivos técnicos")
+
+    manager = AnalysisManager(storage, analyzer, settings.max_concurrent_analyses, notify)
+    application.bot_data.update(settings=settings, storage=storage, manager=manager)
+
+    async def post_init(app: Application) -> None:
+        await manager.start()
+        await app.bot.set_my_commands([
+            ("start", "Abrir o Design Analyzer"),
+            ("analisar", "Analisar um site"),
+            ("status", "Status da análise"),
+            ("historico", "Minhas análises"),
+            ("plano", "Meu plano e uso"),
+            ("ajuda", "Como usar"),
+            ("id", "Meu ID"),
+        ])
+
+    async def post_shutdown(app: Application) -> None:
+        await manager.stop()
+
+    application.post_init = post_init
+    application.post_shutdown = post_shutdown
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("analisar", analyze_command))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("historico", history))
+    application.add_handler(CommandHandler("plano", plan))
+    application.add_handler(CommandHandler("cancelar", cancel))
+    application.add_handler(CommandHandler("ajuda", help_command))
+    application.add_handler(CommandHandler("id", id_command))
+    application.add_handler(CommandHandler("setplan", admin_setplan))
+    application.add_handler(CallbackQueryHandler(callbacks))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
+    application.add_error_handler(error_handler)
+    return application
